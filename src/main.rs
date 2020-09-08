@@ -1,14 +1,11 @@
 #![no_main]
 #![no_std]
 
-use cortex_m::{asm::bkpt, asm::delay, asm::nop};
+use cortex_m::{asm::bkpt, asm::delay};
 use rtt_target::{rprintln, rtt_init_print};
-use ssd1306;
 
 use crate::hal::{
     gpio::{gpioe::PE9, Output, PushPull},
-    i2c,
-    i2c::BlockingI2c,
     prelude::*,
     rcc::{HSEClock, HSEClockMode},
 };
@@ -21,8 +18,8 @@ mod usb_fs;
 
 use cv::CvPanel;
 use encoder::Encoder;
-use synopsys_usb_otg::UsbBus;
 use usb_device::prelude::*;
+use usb_fs::{UsbBus, UsbBusType};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 #[rtic::app(device=stm32f7xx_hal::pac, peripherals=true)]
@@ -31,9 +28,8 @@ const APP: () = {
         led1r: PE9<Output<PushPull>>,
         encoder: Encoder,
         cv_panel: CvPanel,
-        usb_device:
-            usb_device::device::UsbDevice<'static, synopsys_usb_otg::bus::UsbBus<usb_fs::USB>>,
-        serial: SerialPort<'static, synopsys_usb_otg::bus::UsbBus<usb_fs::USB>>,
+        usb_device: usb_device::device::UsbDevice<'static, UsbBusType>,
+        serial: SerialPort<'static, UsbBusType>,
     }
 
     #[init]
@@ -56,51 +52,6 @@ const APP: () = {
         let led1r = gpioe.pe9.into_push_pull_output();
 
         let gpiof = peripherals.GPIOF.split();
-        // let i2c2 = BlockingI2c::i2c2(
-        //     peripherals.I2C2,
-        //     (
-        //         gpiof.pf1.into_alternate_af4(),
-        //         gpiof.pf0.into_alternate_af4(),
-        //     ),
-        //     i2c::Mode::Fast {
-        //         frequency: 400.khz().into(),
-        //     },
-        //     clocks,
-        //     &mut rcc.apb1,
-        //     15000,
-        // );
-
-        // let interface = ssd1306::I2CDIBuilder::new().with_i2c_addr(0x3C).init(i2c2);
-        // let mut disp: ssd1306::mode::TerminalMode<_> =
-        //     ssd1306::Builder::new().connect(interface).into();
-        // disp.init().unwrap();
-        // disp.clear();
-        // for c in "M-M-M-MultiMIDI".chars() {
-        //     disp.print_char(c);
-        // }
-        // disp.set_position(0, 2);
-        // for c in "It lives!".chars() {
-        //     disp.print_char(c);
-        // }
-
-        // disp.set_position(0, 4);
-        // for c in "#rustlang".chars() {
-        //     disp.print_char(c);
-        // }
-        // disp.set_position(0, 5);
-        // for c in "#embeddedrust".chars() {
-        //     disp.print_char(c);
-        // }
-        // disp.set_position(0, 6);
-        // for c in "Hello Penny! Meooo!".chars() {
-        //     disp.print_char(c);
-        // }
-        // disp.set_position(0, 7);
-        // for c in "Hello Emily!!".chars() {
-        //     disp.print_char(c);
-        // }
-        // disp.flush();
-
         let gpiob = peripherals.GPIOB.split();
 
         let cv_panel = CvPanel::new(
@@ -162,44 +113,26 @@ const APP: () = {
         }
     }
 
-    #[idle(resources=[led1r, encoder, cv_panel, usb_device, serial])]
-    fn idle(mut cx: idle::Context) -> ! {
+    #[task(binds=OTG_FS, priority=3, resources=[usb_device, serial])]
+    fn interrupt_usb(cx: interrupt_usb::Context) {
         let mut buf = [0u8; 64];
-        loop {
-            if !cx.resources.usb_device.poll(&mut [cx.resources.serial]) {
-                continue;
-            }
-
-            let read_count = match cx.resources.serial.read(&mut buf[..]) {
-                Ok(count) => count,
-                _ => 0,
-            };
-
-            if read_count > 0 {
-                cx.resources.serial.write(&buf[0..read_count]).unwrap();
-            }
+        if !cx.resources.usb_device.poll(&mut [cx.resources.serial]) {
+            return;
         }
-        // let mut step = 0;
-        // let scale: [u16; 8] = [0, 67, 133, 167, 233, 300, 367, 400];
-        // loop {
-        //     rprintln!("Encoder: {}", cx.resources.encoder.count());
 
-        //     cx.resources
-        //         .cv_panel
-        //         .pitch(0)
-        //         .set(800 + scale[step])
-        //         .unwrap();
-        //     step = (step + 1) % scale.len();
+        let read_count = match cx.resources.serial.read(&mut buf[..]) {
+            Ok(count) => count,
+            _ => 0,
+        };
 
-        //     if cx.resources.encoder.select_pressed() {
-        //         cx.resources.led1r.set_high().unwrap();
-        //     } else {
-        //         cx.resources.led1r.set_low().unwrap();
-        //     }
-        //     for _ in 0..100000 {
-        //         nop();
-        //     }
-        // }
+        if read_count > 0 {
+            cx.resources.serial.write(&buf[0..read_count]).unwrap();
+        }
+    }
+
+    #[idle(resources=[led1r, encoder, cv_panel])]
+    fn idle(cx: idle::Context) -> ! {
+        loop {}
     }
 };
 

@@ -1,15 +1,14 @@
 use crate::hal::{
     gpio::{
         gpiob::{PB10, PB9},
-        gpiod::{PD0, PD1, PD2, PD3, PD4, PD5, PD6, PD7},
         gpiof::{PF10, PF12, PF14, PF8},
-        Floating, Input, OpenDrain, Output, PushPull,
+        OpenDrain, Output, PushPull,
     },
     rcc::Clocks,
     time::U32Ext,
 };
 use crate::mcp4728::{Mcp4728, Mcp4728Error, Mcp4728I2c};
-use embedded_hal::digital::v2::{InputPin, OutputPin};
+use embedded_hal::digital::v2::OutputPin;
 
 type SCL = PB10<Output<OpenDrain>>;
 type SDA = PB9<Output<OpenDrain>>;
