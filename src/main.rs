@@ -14,13 +14,14 @@ use stm32f7xx_hal as hal;
 mod cv;
 mod encoder;
 mod mcp4728;
+mod midi;
 mod usb_fs;
 
 use cv::CvPanel;
 use encoder::Encoder;
+use midi::device::MidiClass;
 use usb_device::prelude::*;
 use usb_fs::{UsbBus, UsbBusType};
-use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 #[rtic::app(device=stm32f7xx_hal::pac, peripherals=true)]
 const APP: () = {
@@ -29,7 +30,7 @@ const APP: () = {
         encoder: Encoder,
         cv_panel: CvPanel,
         usb_device: usb_device::device::UsbDevice<'static, UsbBusType>,
-        serial: SerialPort<'static, UsbBusType>,
+        midi_device: MidiClass<'static, UsbBusType>,
     }
 
     #[init]
@@ -92,7 +93,7 @@ const APP: () = {
             ));
         }
 
-        let serial = SerialPort::new(unsafe { USB_BUS.as_ref().unwrap() });
+        let midi_device = MidiClass::new(unsafe { USB_BUS.as_ref().unwrap() });
 
         let usb_dev = UsbDeviceBuilder::new(
             unsafe { USB_BUS.as_ref().unwrap() },
@@ -101,7 +102,6 @@ const APP: () = {
         .manufacturer("craigjb.com")
         .product("M-M-M-MultiMIDI")
         .serial_number("0.1.1")
-        .device_class(USB_CLASS_CDC)
         .build();
 
         init::LateResources {
@@ -109,30 +109,43 @@ const APP: () = {
             encoder,
             cv_panel,
             usb_device: usb_dev,
-            serial,
+            midi_device,
         }
     }
 
-    #[task(binds=OTG_FS, priority=3, resources=[usb_device, serial])]
-    fn interrupt_usb(cx: interrupt_usb::Context) {
-        let mut buf = [0u8; 64];
-        if !cx.resources.usb_device.poll(&mut [cx.resources.serial]) {
-            return;
-        }
+    // #[task(binds=OTG_FS, priority=3, resources=[usb_device, midi_device])]
+    // fn interrupt_usb(cx: interrupt_usb::Context) {
+    // }
 
-        let read_count = match cx.resources.serial.read(&mut buf[..]) {
-            Ok(count) => count,
-            _ => 0,
-        };
-
-        if read_count > 0 {
-            cx.resources.serial.write(&buf[0..read_count]).unwrap();
-        }
-    }
-
-    #[idle(resources=[led1r, encoder, cv_panel])]
+    #[idle(resources=[led1r, encoder, cv_panel, usb_device, midi_device])]
     fn idle(cx: idle::Context) -> ! {
-        loop {}
+        loop {
+            if cx
+                .resources
+                .usb_device
+                .poll(&mut [cx.resources.midi_device])
+            {
+                if let Ok(packet) = cx.resources.midi_device.read_packet() {
+                    if packet[1] & 0xf0 == 0x90 {
+                        let offset = (packet[2] - 24) as u16;
+                        cx.resources
+                            .cv_panel
+                            .pitch(0)
+                            .set((800 + (offset * 34)).min(4095))
+                            .unwrap();
+                        rprintln!("Note on: {}", offset);
+                    } else if packet[1] & 0xf0 == 0x80 {
+                        cx.resources.cv_panel.pitch(0).set(0).unwrap();
+                        let offset = (packet[2] - 24) as u16;
+                        rprintln!("Note off: {}", offset);
+                    }
+                }
+            }
+
+            // rprintln!("Idle...");
+            // delay(1000000);
+            // }
+        }
     }
 };
 

@@ -14,7 +14,6 @@ ssd1306 = "0.4.0"
 rtt-target = { version = "0.2.0", features = ["cortex-m"] }
 synopsys-usb-otg = { version = "0.2.2", features = ["cortex-m", "fs"] }
 usb-device = "0.2.5"
-usbd-serial = "0.1.0"
 
 [dependencies.embedded-hal]
 features = ["unproven"]
@@ -23,3 +22,8 @@ version = "0.2.3"
 [dependencies.stm32f7xx-hal]
 path = "../stm32f7xx-hal"
 features = ["stm32f733"]
+
+[profile.release]
+codegen-units = 1 # better optimizations
+debug = true # symbols are nice and they don't increase the size on Flash
+lto = false # better optimizations

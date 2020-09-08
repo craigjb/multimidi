@@ -254,7 +254,6 @@ dependencies = [
  "stm32f7xx-hal",
  "synopsys-usb-otg",
  "usb-device",
- "usbd-serial",
 ]
 
 [[package]]
@@ -440,17 +439,6 @@ name = "usb-device"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e5e2b9ba23f0d9ef7a34e498b6581c9d67944a1916542bfc7238bf1dc0d6acd"
-
-[[package]]
-name = "usbd-serial"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b45051be4bc25e6f85caacb1d3f45ace644fcc6e662b3d976330912542b7f69e"
-dependencies = [
- "embedded-hal",
- "nb 0.1.3",
- "usb-device",
-]
 
 [[package]]
 name = "vcell"
