@@ -1,9 +1,7 @@
 #![no_main]
 #![no_std]
 
-use cortex_m::{asm::bkpt, asm::delay};
-use cortex_m_rt::entry;
-#[allow(unused_import)]
+use cortex_m::{asm::bkpt, asm::delay, asm::nop};
 use rtt_target::{rprintln, rtt_init_print};
 use ssd1306;
 
@@ -16,14 +14,26 @@ use crate::hal::{
 };
 use stm32f7xx_hal as hal;
 
+mod cv;
+mod encoder;
 mod mcp4728;
+mod usb_fs;
 
-use mcp4728::{Mcp4728, Mcp4728I2c};
+use cv::CvPanel;
+use encoder::Encoder;
+use synopsys_usb_otg::UsbBus;
+use usb_device::prelude::*;
+use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
-#[rtfm::app(device=stm32f7xx_hal::pac, peripherals=true)]
+#[rtic::app(device=stm32f7xx_hal::pac, peripherals=true)]
 const APP: () = {
     struct Resources {
         led1r: PE9<Output<PushPull>>,
+        encoder: Encoder,
+        cv_panel: CvPanel,
+        usb_device:
+            usb_device::device::UsbDevice<'static, synopsys_usb_otg::bus::UsbBus<usb_fs::USB>>,
+        serial: SerialPort<'static, synopsys_usb_otg::bus::UsbBus<usb_fs::USB>>,
     }
 
     #[init]
@@ -34,8 +44,13 @@ const APP: () = {
 
         let peripherals = cx.device;
 
-        let mut rcc = peripherals.RCC.constrain();
-        let clocks = rcc.cfgr.sysclk(108.mhz()).freeze();
+        let rcc = peripherals.RCC.constrain();
+        let clocks = rcc
+            .cfgr
+            .hse(HSEClock::new(12.mhz(), HSEClockMode::Oscillator))
+            .sysclk(192.mhz())
+            .usb(true)
+            .freeze();
 
         let gpioe = peripherals.GPIOE.split();
         let led1r = gpioe.pe9.into_push_pull_output();
@@ -88,59 +103,103 @@ const APP: () = {
 
         let gpiob = peripherals.GPIOB.split();
 
-        let mut dac_i2c = Mcp4728I2c::new(
+        let cv_panel = CvPanel::new(
             &clocks,
-            100.khz(),
+            gpiof.pf8.into_push_pull_output(),
+            gpiof.pf10.into_push_pull_output(),
+            gpiof.pf12.into_push_pull_output(),
+            gpiof.pf14.into_push_pull_output(),
             gpiob.pb10.into_open_drain_output(),
             gpiob.pb9.into_open_drain_output(),
         );
-        let mut ldac1 = gpiof.pf8.into_push_pull_output();
-        ldac1.set_high().unwrap();
-        let mut ldac2 = gpiof.pf10.into_push_pull_output();
-        ldac2.set_high().unwrap();
-        let mut ldac3 = gpiof.pf12.into_push_pull_output();
-        ldac3.set_high().unwrap();
-        let mut ldac4 = gpiof.pf14.into_push_pull_output();
-        ldac4.set_high().unwrap();
 
-        let mut dac1 = Mcp4728::new(ldac1, 0x1, &mut dac_i2c).unwrap();
-        let mut dac2 = Mcp4728::new(ldac2, 0x2, &mut dac_i2c).unwrap();
-        let mut dac3 = Mcp4728::new(ldac3, 0x3, &mut dac_i2c).unwrap();
-        let mut dac4 = Mcp4728::new(ldac4, 0x4, &mut dac_i2c).unwrap();
+        let gpioc = peripherals.GPIOC.split();
+        let encoder = Encoder::new(
+            peripherals.TIM3,
+            gpioc.pc6.into_alternate_af2(),
+            gpioc.pc7.into_alternate_af2(),
+            gpioc.pc5.into_floating_input(),
+        );
 
-        dac1.set_channel(&mut dac_i2c, 0, 0x0).unwrap();
-        dac1.set_channel(&mut dac_i2c, 1, 0x400).unwrap();
-        dac1.set_channel(&mut dac_i2c, 2, 0x800).unwrap();
-        dac1.set_channel(&mut dac_i2c, 3, 0xC00).unwrap();
+        let gpioa = peripherals.GPIOA.split();
 
-        dac2.set_channel(&mut dac_i2c, 0, 0xFFF).unwrap();
-        dac2.set_channel(&mut dac_i2c, 1, 0xC00).unwrap();
-        dac2.set_channel(&mut dac_i2c, 2, 0x800).unwrap();
-        dac2.set_channel(&mut dac_i2c, 3, 0x400).unwrap();
+        static mut EP_MEM: [u32; 1024] = [0; 1024];
+        static mut USB_BUS: Option<
+            usb_device::bus::UsbBusAllocator<synopsys_usb_otg::UsbBus<usb_fs::USB>>,
+        > = None;
+        unsafe {
+            USB_BUS = Some(UsbBus::new(
+                usb_fs::USB {
+                    usb_global: peripherals.OTG_FS_GLOBAL,
+                    usb_device: peripherals.OTG_FS_DEVICE,
+                    usb_pwrclk: peripherals.OTG_FS_PWRCLK,
+                    pin_dm: gpioa.pa11.into_alternate_af10(),
+                    pin_dp: gpioa.pa12.into_alternate_af10(),
+                    hclk: clocks.hclk(),
+                },
+                &mut EP_MEM,
+            ));
+        }
 
-        dac3.set_channel(&mut dac_i2c, 0, 0x400).unwrap();
-        dac3.set_channel(&mut dac_i2c, 1, 0x800).unwrap();
-        dac3.set_channel(&mut dac_i2c, 2, 0xC00).unwrap();
-        dac3.set_channel(&mut dac_i2c, 3, 0xFFF).unwrap();
+        let serial = SerialPort::new(unsafe { USB_BUS.as_ref().unwrap() });
 
-        dac4.set_channel(&mut dac_i2c, 0, 0xFFF).unwrap();
-        dac4.set_channel(&mut dac_i2c, 1, 0x800).unwrap();
-        dac4.set_channel(&mut dac_i2c, 2, 0xC00).unwrap();
-        dac4.set_channel(&mut dac_i2c, 3, 0x400).unwrap();
+        let usb_dev = UsbDeviceBuilder::new(
+            unsafe { USB_BUS.as_ref().unwrap() },
+            UsbVidPid(0x16c0, 0x27dd),
+        )
+        .manufacturer("craigjb.com")
+        .product("M-M-M-MultiMIDI")
+        .serial_number("0.1.1")
+        .device_class(USB_CLASS_CDC)
+        .build();
 
-        init::LateResources { led1r }
+        init::LateResources {
+            led1r,
+            encoder,
+            cv_panel,
+            usb_device: usb_dev,
+            serial,
+        }
     }
 
-    #[idle(resources=[led1r])]
-    fn idle(cx: idle::Context) -> ! {
+    #[idle(resources=[led1r, encoder, cv_panel, usb_device, serial])]
+    fn idle(mut cx: idle::Context) -> ! {
+        let mut buf = [0u8; 64];
         loop {
-            for i in 0..100000 {
-                cx.resources.led1r.set_high().unwrap();
+            if !cx.resources.usb_device.poll(&mut [cx.resources.serial]) {
+                continue;
             }
-            for i in 0..100000 {
-                cx.resources.led1r.set_low().unwrap();
+
+            let read_count = match cx.resources.serial.read(&mut buf[..]) {
+                Ok(count) => count,
+                _ => 0,
+            };
+
+            if read_count > 0 {
+                cx.resources.serial.write(&buf[0..read_count]).unwrap();
             }
         }
+        // let mut step = 0;
+        // let scale: [u16; 8] = [0, 67, 133, 167, 233, 300, 367, 400];
+        // loop {
+        //     rprintln!("Encoder: {}", cx.resources.encoder.count());
+
+        //     cx.resources
+        //         .cv_panel
+        //         .pitch(0)
+        //         .set(800 + scale[step])
+        //         .unwrap();
+        //     step = (step + 1) % scale.len();
+
+        //     if cx.resources.encoder.select_pressed() {
+        //         cx.resources.led1r.set_high().unwrap();
+        //     } else {
+        //         cx.resources.led1r.set_low().unwrap();
+        //     }
+        //     for _ in 0..100000 {
+        //         nop();
+        //     }
+        // }
     }
 };
 

@@ -1,46 +1,40 @@
 use crate::hal::{rcc::Clocks, time::Hertz};
-use core::fmt::Debug;
-use core::marker::PhantomData;
-use cortex_m::asm::delay;
+use core::{fmt::Debug, marker::PhantomData};
+use cortex_m::{asm::delay, interrupt};
 use embedded_hal::digital::v2::{InputPin, OutputPin};
 
 const GENERAL_CALL_ADDR: u8 = 0x0;
 const DEVICE_CODE: u8 = 0x60;
 
-pub struct Mcp4728<P, SCL, SDA>
+pub struct Mcp4728<SCL, SDA>
 where
-    P: OutputPin,
-    <P as embedded_hal::digital::v2::OutputPin>::Error: Debug,
     SCL: OutputPin,
     SCL::Error: Debug,
     SDA: OutputPin + InputPin,
     <SDA as embedded_hal::digital::v2::OutputPin>::Error: Debug,
     <SDA as embedded_hal::digital::v2::InputPin>::Error: Debug,
 {
-    ldac: P,
     address: u8,
-    v0: u16,
-    v1: u16,
-    v2: u16,
-    v3: u16,
     _i2c: PhantomData<Mcp4728I2c<SCL, SDA>>,
 }
 
-impl<P: OutputPin, SCL, SDA> Mcp4728<P, SCL, SDA>
+impl<SCL, SDA> Mcp4728<SCL, SDA>
 where
-    P: OutputPin,
-    <P as embedded_hal::digital::v2::OutputPin>::Error: Debug,
     SCL: OutputPin,
     SCL::Error: Debug,
     SDA: OutputPin + InputPin,
     <SDA as embedded_hal::digital::v2::OutputPin>::Error: Debug,
     <SDA as embedded_hal::digital::v2::InputPin>::Error: Debug,
 {
-    pub fn new(
+    pub fn new<P>(
         mut ldac: P,
         address: u8,
         i2c: &mut Mcp4728I2c<SCL, SDA>,
-    ) -> Result<Self, Mcp4728Error> {
+    ) -> Result<Self, Mcp4728Error>
+    where
+        P: OutputPin,
+        <P as embedded_hal::digital::v2::OutputPin>::Error: Debug,
+    {
         assert!(address <= 0x7);
         ldac.set_high().unwrap();
 
@@ -54,16 +48,8 @@ where
         Self::write_channel(new_addr, 1, 0x0, i2c)?;
         Self::write_channel(new_addr, 2, 0x0, i2c)?;
         Self::write_channel(new_addr, 3, 0x0, i2c)?;
-        ldac.set_low().unwrap();
-        delay(i2c.full_delay);
-        ldac.set_high().unwrap();
         Ok(Self {
-            ldac,
             address: new_addr,
-            v0: 0,
-            v1: 0,
-            v2: 0,
-            v3: 0,
             _i2c: PhantomData,
         })
     }
@@ -79,42 +65,54 @@ where
         Self::write_channel(self.address, channel, value, i2c)
     }
 
-    fn read_address(ldac: &mut P, i2c: &mut Mcp4728I2c<SCL, SDA>) -> Result<u8, Mcp4728Error> {
-        ldac.set_high().unwrap();
-        i2c.start(GENERAL_CALL_ADDR, false)?;
-        i2c.write_byte_ldac(0x0C, ldac);
-        i2c.check_ack()?;
-        i2c.start(DEVICE_CODE, true)?;
-        let data = i2c.read_byte(false);
-        // i2c.stop();
-        ldac.set_high().unwrap();
-        let addr1 = (data & 0xE0) >> 5;
-        let addr2 = (data & 0x0E) >> 1;
-        let check = data & 0x11;
-        if addr1 != addr2 || check != 0x10 {
-            Err(Mcp4728Error::AddressMismatch)
-        } else {
-            Ok(addr1 | DEVICE_CODE)
-        }
+    fn read_address<P>(ldac: &mut P, i2c: &mut Mcp4728I2c<SCL, SDA>) -> Result<u8, Mcp4728Error>
+    where
+        P: OutputPin,
+        <P as embedded_hal::digital::v2::OutputPin>::Error: Debug,
+    {
+        interrupt::free(|_| {
+            ldac.set_high().unwrap();
+            i2c.start(GENERAL_CALL_ADDR, false)?;
+            i2c.write_byte_ldac(0x0C, ldac);
+            i2c.check_ack()?;
+            i2c.start(DEVICE_CODE, true)?;
+            let data = i2c.read_byte(false);
+            // i2c.stop();
+            ldac.set_high().unwrap();
+            let addr1 = (data & 0xE0) >> 5;
+            let addr2 = (data & 0x0E) >> 1;
+            let check = data & 0x11;
+            if addr1 != addr2 || check != 0x10 {
+                Err(Mcp4728Error::AddressMismatch)
+            } else {
+                Ok(addr1 | DEVICE_CODE)
+            }
+        })
     }
 
-    fn write_address(
+    fn write_address<P>(
         ldac: &mut P,
         current_addr: u8,
         new_addr: u8,
         i2c: &mut Mcp4728I2c<SCL, SDA>,
-    ) -> Result<(), Mcp4728Error> {
-        ldac.set_high().unwrap();
-        i2c.start(current_addr, false)?;
-        i2c.write_byte_ldac(0x61 | ((current_addr & 0x7) << 2), ldac);
-        i2c.check_ack()?;
-        i2c.write_byte(0x62 | ((new_addr & 0x7) << 2));
-        i2c.check_ack()?;
-        i2c.write_byte(0x63 | ((new_addr & 0x7) << 2));
-        i2c.check_ack()?;
-        i2c.stop();
-        ldac.set_high().unwrap();
-        Ok(())
+    ) -> Result<(), Mcp4728Error>
+    where
+        P: OutputPin,
+        <P as embedded_hal::digital::v2::OutputPin>::Error: Debug,
+    {
+        interrupt::free(|_| {
+            ldac.set_high().unwrap();
+            i2c.start(current_addr, false)?;
+            i2c.write_byte_ldac(0x61 | ((current_addr & 0x7) << 2), ldac);
+            i2c.check_ack()?;
+            i2c.write_byte(0x62 | ((new_addr & 0x7) << 2));
+            i2c.check_ack()?;
+            i2c.write_byte(0x63 | ((new_addr & 0x7) << 2));
+            i2c.check_ack()?;
+            i2c.stop();
+            ldac.set_high().unwrap();
+            Ok(())
+        })
     }
 
     fn write_channel(
@@ -124,15 +122,17 @@ where
         i2c: &mut Mcp4728I2c<SCL, SDA>,
     ) -> Result<(), Mcp4728Error> {
         assert!(channel <= 3);
-        i2c.start(addr, false)?;
-        i2c.write_byte(0x40 | (channel << 1));
-        i2c.check_ack()?;
-        i2c.write_byte(((value & 0xF00) >> 8) as u8 | 0x80);
-        i2c.check_ack()?;
-        i2c.write_byte((value & 0xFF) as u8);
-        i2c.check_ack()?;
-        i2c.stop();
-        Ok(())
+        interrupt::free(|_| {
+            i2c.start(addr, false)?;
+            i2c.write_byte(0x40 | (channel << 1));
+            i2c.check_ack()?;
+            i2c.write_byte(((value & 0xF00) >> 8) as u8 | 0x80);
+            i2c.check_ack()?;
+            i2c.write_byte((value & 0xFF) as u8);
+            i2c.check_ack()?;
+            i2c.stop();
+            Ok(())
+        })
     }
 }
 
